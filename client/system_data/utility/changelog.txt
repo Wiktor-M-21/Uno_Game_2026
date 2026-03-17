@@ -1,4 +1,16 @@
-First version of the New Uno by Wiktor.M21
+1.0.3
+-- Minor bugs --
+Adjusted update page of Settings
+Fixed singleplayer settings getting changed during update
+Fixed system configuration settings getting changed during update
+When installing a user generates their own system_properties.ini page
+
+
+1.0.2
+
+-- Minor bugs --
+Added Windows compatibility
+Added compatibility to non pre installed curses and requests
 
 1.0.1
 --- Added ---
@@ -20,12 +32,6 @@ Added toggle to auto update
 Check for update button
 
 -- Core --
-Added API Menu.py which allows for menus to be built easily
+Added API Menu.py which allows for curses menus to be built easily
 Added update.py to be able to update the game
 Added system properties
-
-1.0.2
-
--- Minor bugs --
-Added Windows compatibility
-Added compatibility to non pre installed curses and requests

@@ -3,7 +3,6 @@ from system_data.api_menu import menu, text, multichoice, inline_number, curses_
 import system_data.play_classic as classic
 from system_data.uno_ui import run_game
 from system_data import play_classic as classic
-import curses
 from system_data.utility.update_utility import (
     get_old_exists, get_old_version, get_changelog,
     restore_old_version, delete_old
@@ -11,8 +10,10 @@ from system_data.utility.update_utility import (
 from system_data.utility.ui_utility import show_changelog, confirm_screen
 
 #Libaries to import
+import curses
 import os
 import configparser
+import time
 
 BASE_DIR       = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH    = os.path.join(BASE_DIR, "system_data", "system_properties.ini")
@@ -481,14 +482,39 @@ def main():
                                     ),
                                     text(""),
                                     "< Back",
-                                ], color="yellow", sidebars=build_update_sidebars()) as update_menu:
+                                ], color="yellow", sidebars=build_update_sidebars) as update_menu:
 
                                     if update_menu.is_selected("Check for updates"):
+                                        global latest_version
                                         curses_control("end")
-                                        latest_version = update.check_for_latest_version()
-                                        update.check_for_updates()
-                                        input("Press Enter to return to menu...")
-                                        curses_control("start")
+                                        print("\nChecking for updates...")
+                                        result = update.check_for_updates()
+                                        latest_version = result.get("version") 
+
+                                        if result["status"] == "updated":
+                                            print(f"\nUpdated to {result['version']}!")
+                                            if result["notes"]:
+                                                print(f"Notes: {result['notes']}")
+                                            print("\nRestarting game...")
+                                            time.sleep(2)
+                                            update.restart_game()  # replaces this process with a fresh one
+
+                                        elif result["status"] == "up_to_date":
+                                            print(f"\nYou are up to date ({result['version']})")
+                                            input("\nPress Enter to return to menu...")
+                                            curses_control("start")
+
+                                        elif result["status"] == "failed":
+                                            print(f"\nUpdate failed:")
+                                            for err in result["errors"]:
+                                                print(f"  - {err}")
+                                            input("\nPress Enter to return to menu...")
+                                            curses_control("start")
+
+                                        elif result["status"] == "no_manifest":
+                                            print("\nCould not reach update server.")
+                                            input("\nPress Enter to return to menu...")
+                                            curses_control("start")
 
                                     if update_menu.is_selected("Latest Update"):
                                         while True:
@@ -522,7 +548,6 @@ def main():
                                             ], color="yellow", sidebars=latest_sidebars) as latest_menu:
 
                                                 if latest_menu.is_selected("View Changelog"):
-                                                    from system_data.api_menu import get_stdscr
                                                     show_changelog(get_stdscr())
 
                                                 if latest_menu.is_selected("Uninstall Update"):
@@ -602,10 +627,16 @@ def main():
 # ── Startup ───────────────────────────────────────────────────────────────
 auto_update = update.auto_update()
 
-if auto_update:
-    latest_version = update.check_for_latest_version()
-    print("Auto-update is enabled. Checking for updates...")
-    update.check_for_updates()
+if update.auto_update():
+    print("Checking for updates...")
+    result = update.silent_update_check()
+    if result["status"] == "updated":
+        print(f"Updated to {result['version']}. Restarting...")
+        time.sleep(2)
+        update.restart_game()
+    elif result["status"] == "failed":
+        print(f"Update failed: {result.get('errors', [])}")
+        input("Press Enter to continue anyway...")
 
 print("Starting the game...")
 main()

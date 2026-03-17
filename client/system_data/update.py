@@ -6,10 +6,86 @@ except ImportError:
     import requests
 import configparser
 import shutil
+import sys
+
+
+def generate_system_properties():
+    """Create system_properties.ini with defaults if it doesn't exist."""
+    if os.path.exists(SYS_CONFIG_PATH):
+        return
+
+    config = configparser.ConfigParser()
+
+    config["update"] = {
+        "auto_update":        "False",
+        "update_channel":     "stable",
+        "update_manifest_url": "https://raw.githubusercontent.com/Wiktor-M-21/Updates/main/uno_update.json",
+    }
+    config["version"] = {
+        "current_version": "1.0.0",
+    }
+    config["modules"] = {
+        "enabled": "True",
+    }
+    config["dev_mode"] = {
+        "display_hover": "False",
+    }
+
+    with open(SYS_CONFIG_PATH, "w") as f:
+        config.write(f)
+
+    print("Generated system_properties.ini")
+
+
+def generate_sp_settings():
+    """Create sp_settings.ini with defaults if it doesn't exist."""
+    if os.path.exists(SP_CONFIG_PATH):
+        return
+
+    config = configparser.ConfigParser()
+
+    config["bots"] = {
+        "number_of_bots":   "1",
+        "same_difficulty":  "false",
+    }
+    config["bot_1"] = {
+        "name":       "Bot 1",
+        "difficulty": "50",
+    }
+    config["rules"] = {
+        "stack_draws":          "true",
+        "force_play":           "false",
+        "jump_in":              "false",
+        "seven_swap":           "false",
+        "zero_rotate":          "false",
+        "reshuffle_discard_pile": "false",
+    }
+    config["game"] = {
+        "starting_hand_size": "7",
+        "win_condition":      "first",
+        "points_to_win":      "500",
+    }
+
+    with open(SP_CONFIG_PATH, "w") as f:
+        config.write(f)
+
+    print("Generated sp_settings.ini")
+
+
+def run_setup():
+    generate_system_properties()
+    generate_sp_settings()
+
+def restart_game():
+    """Restart the game process completely."""
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
 
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 CLIENT_DIR  = os.path.dirname(BASE_DIR)
 OLD_PATH    = os.path.join(BASE_DIR, "utility", "uno.old")
+SYS_CONFIG_PATH    = os.path.join(BASE_DIR, "system_properties.ini")
+SP_CONFIG_PATH = os.path.join(BASE_DIR, "sp_settings.ini")
 
 def load_config():
     path = os.path.join(BASE_DIR, "system_properties.ini")
@@ -89,16 +165,27 @@ def _download_file(url, dest_path):
 
 
 def _apply_update(manifest):
-    errors = []
+    errors  = []
+    SKIP    = {
+        "system_data/system_properties.ini",
+        "system_data/sp_settings.ini",
+    }
+
     for file_entry in manifest.get("files", []):
         rel_path = file_entry["path"]
         url      = file_entry["url"]
-        dest     = os.path.join(CLIENT_DIR, rel_path)
+
+        if rel_path in SKIP:
+            print(f"  Skipping {rel_path} (user preferences preserved)")
+            continue
+
+        dest = os.path.join(CLIENT_DIR, rel_path)
         print(f"  Downloading {rel_path}...")
         success, err = _download_file(url, dest)
         if not success:
             errors.append(f"{rel_path}: {err}")
             print(f"  Failed: {err}")
+
     return len(errors) == 0, errors
 
 
@@ -114,18 +201,15 @@ def _apply_new_version(manifest):
 
 
 def check_for_updates():
-    """
-    Full update flow. Returns result dict:
-    status: up_to_date | updated | failed | no_manifest
-    """
     try:
         manifest = fetch_manifest()
     except Exception as e:
         print(f"Could not reach update server: {e}")
         return {"status": "no_manifest", "version": None, "errors": [], "notes": ""}
 
-    latest = manifest.get("version")
-    notes  = manifest.get("notes", "")
+    latest          = manifest.get("version")
+    notes           = manifest.get("notes", "")
+    new_manifest_url = manifest.get("manifest_url")  # optional — only if URL changes
 
     if not _is_update_available(manifest):
         print(f"Already up to date ({CURRENT_VERSION})")
@@ -139,12 +223,35 @@ def check_for_updates():
     success, errors = _apply_update(manifest)
 
     if success:
-        _apply_new_version(manifest)
+        _merge_system_properties(latest, new_manifest_url)  # ← only touches version + url
         print(f"Updated to {latest} successfully.")
         return {"status": "updated", "version": latest, "errors": [], "notes": notes}
     else:
         print("Update failed — backup preserved in uno.old")
         return {"status": "failed", "version": latest, "errors": errors, "notes": notes}
+
+def _merge_system_properties(new_version, new_manifest_url=None):
+    """
+    After update — only change version and manifest_url.
+    Leave all user preferences (auto_update, channel, etc) untouched.
+    """
+    cfg_path = os.path.join(BASE_DIR, "system_properties.ini")
+    cfg = configparser.ConfigParser()
+    cfg.read(cfg_path)
+
+    # update version
+    if not cfg.has_section("version"):
+        cfg.add_section("version")
+    cfg["version"]["current_version"] = new_version
+
+    # update manifest url only if a new one was provided in the manifest
+    if new_manifest_url:
+        if not cfg.has_section("update"):
+            cfg.add_section("update")
+        cfg["update"]["update_manifest_url"] = new_manifest_url
+
+    with open(cfg_path, "w") as f:
+        cfg.write(f)
 
 
 def silent_update_check():
