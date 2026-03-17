@@ -1,0 +1,26 @@
+First version of the New Uno by Wiktor.M21
+
+--- Added ---
+
+-- Single Player --
+Classic Game Mode of Uno
+Single Player Bot Mode
+- Customise the bot difficulty level, and name
+- Customise Number of Bots
+- Added multichoice to Cards for future update to be able to play different decks
+- Stackable draws
+- Force player to play Cards
+- Reshuffle Discard Pile
+
+-- Settings --
+
+-- Update --
+Added toggle to auto update
+Check for update button
+
+-- Core --
+Added API Menu.py which allows for menus to be built easily
+Added update.py to be able to update the game
+Added system properties
+
+
