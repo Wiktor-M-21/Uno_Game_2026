@@ -189,15 +189,7 @@ def _apply_update(manifest):
     return len(errors) == 0, errors
 
 
-def _apply_new_version(manifest):
-    cfg_path = os.path.join(BASE_DIR, "system_properties.ini")
-    cfg = configparser.ConfigParser()
-    cfg.read(cfg_path)
-    if not cfg.has_section("version"):
-        cfg.add_section("version")
-    cfg["version"]["current_version"] = manifest.get("version", CURRENT_VERSION)
-    with open(cfg_path, "w") as f:
-        cfg.write(f)
+
 
 
 def check_for_updates():
