@@ -1,6 +1,10 @@
-import requests
-import configparser
 import os
+try:
+    import requests
+except ImportError:
+    os.system("pip3 install requests")
+    import requests
+import configparser
 import shutil
 
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))

@@ -1,6 +1,10 @@
-import curses
-import re
 import os
+try:
+    import curses
+except ImportError:
+    os.system("pip3 install windows-curses" if os.name == "nt" else "pip3 install curses")
+    import curses    
+import re
 
 ANSI_TO_PAIR = {
     '\033[91m': 6,

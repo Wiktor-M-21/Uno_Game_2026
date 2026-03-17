@@ -1,5 +1,6 @@
 First version of the New Uno by Wiktor.M21
 
+1.0.1
 --- Added ---
 
 -- Single Player --
@@ -23,4 +24,8 @@ Added API Menu.py which allows for menus to be built easily
 Added update.py to be able to update the game
 Added system properties
 
+1.0.2
 
+-- Minor bugs --
+Added Windows compatibility
+Added compatibility to non pre installed curses and requests
