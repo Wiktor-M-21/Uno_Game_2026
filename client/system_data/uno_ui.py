@@ -31,8 +31,8 @@ def _card_pair(card):
     return COLOUR_PAIRS.get(card[0], 12)
 
 
-def _card_sym(card):
-    return classic.CARD_SYMBOLS.get(card[1], card[1])
+def _card_sym(card, rules=None, direction=1):
+    return classic.card_symbol(card[1], rules=rules, direction=direction)
 
 
 def _draw_header(stdscr, y, w):
@@ -95,7 +95,7 @@ def _draw_top_card(stdscr, state, y):
     top     = state["discard"][-1]
     active  = state["active_colour"]
     colour, value = top
-    sym     = _card_sym(top)
+    sym     = _card_sym(top, rules=state["rules"], direction=state["direction"])
     pair    = _card_pair(top)
     pending = state["pending_draw"]
 
@@ -157,6 +157,7 @@ def _draw_hand(stdscr, state, y, selected, uno_called, picking_colour, colour_id
     active   = state["active_colour"]
     rules    = state["rules"]
     pending  = state["pending_draw"]
+    direction = state["direction"]
     playable = classic.get_playable(hand, top_card, active, rules, pending)
     h, w     = stdscr.getmaxyx()
     panel_w  = w // 2
@@ -175,7 +176,7 @@ def _draw_hand(stdscr, state, y, selected, uno_called, picking_colour, colour_id
     for card, x, visible, i in slots:
         if not visible:
             continue
-        sym  = _card_sym(card)
+        sym  = _card_sym(card, rules=rules, direction=direction)
         pair = _card_pair(card)
         can  = card in playable
 
@@ -251,12 +252,17 @@ def _draw_hand(stdscr, state, y, selected, uno_called, picking_colour, colour_id
     return y + 2, scroll_offset
 
 
-def _draw_controls(stdscr, y, pending, uno_called, hand_size, picking_colour, selected_card=None):
-    panel_w = 60  # keep controls within left panel only
+def _draw_controls(stdscr, y, pending, uno_called, hand_size, picking_colour,
+                   drew_this_turn=False, picking_swap=False, selected_card=None):
+    panel_w = 60
     lines   = []
 
     if picking_colour:
-        lines.append("Up/Down to pick colour   Enter to confirm")
+        lines.append("Up/Down to pick colour   Enter to confirm   Left/Right to cancel")
+    elif picking_swap:
+        lines.append("Up/Down to pick swap target   Enter to confirm   Q/Left to cancel")
+    elif drew_this_turn:
+        lines.append("Play the drawn card  OR  press D / Enter on Draw to pass turn")
     else:
         lines.append("Left/Right to select   Enter to play   D to draw   U for UNO   Q to quit")
         if hand_size == 2 and not uno_called:
@@ -275,7 +281,8 @@ def _draw_controls(stdscr, y, pending, uno_called, hand_size, picking_colour, se
     return y + len(lines) + 1
 
 
-def _draw_sidebar(stdscr, state, selected, w, picking_colour, colour_idx):
+def _draw_sidebar(stdscr, state, selected, w, picking_colour, colour_idx,
+                  picking_swap=False, swap_target=0):
     panel_x = w // 2 + 4
     pw      = w - panel_x - 2
     row     = 3
@@ -329,7 +336,7 @@ def _draw_sidebar(stdscr, state, selected, w, picking_colour, colour_idx):
     sb_line("Win condition:   ", state["game"]["win_condition"].capitalize())
     sb_gap()
 
-    top_sym  = classic.CARD_SYMBOLS.get(top_card[1], top_card[1])
+    top_sym  = classic.card_symbol(top_card[1], rules=rules, direction=state["direction"])
     top_pair = COLOUR_PAIR_MAP.get(active, 12) if top_card[0] == "wild" else _card_pair(top_card)
     sb_title("Active Card:")
     try:
@@ -344,7 +351,7 @@ def _draw_sidebar(stdscr, state, selected, w, picking_colour, colour_idx):
         sb_line("Pending draw:    ", f"+{pending} cards")
 
     chain = [
-        classic.CARD_SYMBOLS.get(c[1], c[1])
+        classic.card_symbol(c[1], rules=rules, direction=state["direction"])
         for c in reversed(state["discard"])
         if c[1] in ("draw_two", "draw_four")
     ]
@@ -380,11 +387,41 @@ def _draw_sidebar(stdscr, state, selected, w, picking_colour, colour_idx):
             pass
         return
 
+    # ── Swap target picker ─────────────────────────────────────────────────
+    if picking_swap:
+        sb_title("Swap Hands With:")
+        bots = state["bots"]
+        for bi, bot in enumerate(bots):
+            try:
+                if bi == swap_target:
+                    stdscr.attron(curses.A_BOLD | curses.color_pair(4))
+                    stdscr.addstr(row, panel_x,
+                                  f"> {bot['name']} ({len(state['hands'][bi+1])} cards)")
+                    stdscr.attroff(curses.A_BOLD | curses.color_pair(4))
+                else:
+                    stdscr.attron(curses.A_DIM)
+                    stdscr.addstr(row, panel_x,
+                                  f"  {bot['name']} ({len(state['hands'][bi+1])} cards)")
+                    stdscr.attroff(curses.A_DIM)
+            except curses.error:
+                pass
+            row += 1
+        sb_gap()
+        try:
+            stdscr.attron(curses.A_DIM)
+            stdscr.addstr(row, panel_x, "Up/Down to select")
+            row += 1
+            stdscr.addstr(row, panel_x, "Enter to confirm")
+            stdscr.attroff(curses.A_DIM)
+        except curses.error:
+            pass
+        return
+
     sb_title("Selected Card:")
     if selected < len(hand):
         card        = hand[selected]
         colour, val = card
-        sym         = classic.CARD_SYMBOLS.get(val, val)
+        sym         = classic.card_symbol(val, rules=rules, direction=state["direction"])
         pair        = _card_pair(card)
         can         = card in classic.get_playable(hand, top_card, active, rules, pending)
         pts         = classic.card_points(card)
@@ -413,6 +450,10 @@ def _draw_sidebar(stdscr, state, selected, w, picking_colour, colour_idx):
             "draw_four": "Next player draws 4. You pick the colour.",
             "wild":      "Change the active colour to any colour.",
         }
+        if val == "7" and rules.get("seven_swap"):
+            explanations["7"] = "Swap your hand with any other player!"
+        if val == "0" and rules.get("zero_rotate"):
+            explanations["0"] = "All players pass their hand to the next player."
         if val in explanations:
             words = explanations[val].split()
             line  = ""
@@ -484,6 +525,11 @@ def run_game(stdscr, state):
     picking_colour = False
     colour_idx     = 0
     scroll_offset  = 0
+    drew_this_turn = False
+    picking_swap   = False
+    swap_target    = 0
+    picking_swap   = False   # True when player played a 7 and must pick swap target
+    swap_target    = 0       # index into other players (0 = first bot, etc.)
 
     def add_log(msg):
         log.append(msg)
@@ -518,22 +564,43 @@ def run_game(stdscr, state):
         y, scroll_offset = _draw_hand(stdscr, state, y, selected, uno_called,
                                        picking_colour, colour_idx, scroll_offset)
         y = _draw_controls(stdscr, y, state["pending_draw"], uno_called,
-                           len(hand), picking_colour)
+                           len(hand), picking_colour, drew_this_turn, picking_swap)
         _draw_log(stdscr, log, h - 5, panel_w)
-        _draw_sidebar(stdscr, state, selected, w, picking_colour, colour_idx)
+        _draw_sidebar(stdscr, state, selected, w, picking_colour, colour_idx,
+                      picking_swap, swap_target)
 
         stdscr.refresh()
 
         # ── Bot turn ──────────────────────────────────────────────────────
-        if current != 0 and not picking_colour:
+        if current != 0 and not picking_colour and not picking_swap:
+            drew_this_turn = False
+            picking_swap   = False
+
             import system_data.bot as bot_ai
-            bot    = state["bots"][current - 1]
-            result = bot_ai.bot_turn(state, current, bot["difficulty"])
+            bot        = state["bots"][current - 1]
+            difficulty = bot["difficulty"]  # 0–100
+
+            # Difficulty-scaled delay before bot acts.
+            # Harder bots (higher difficulty) act faster, giving less time to jump in.
+            # Easy (0): 1.2 s window.  Hard (100): 0.2 s window.
+            delay = 1.2 - (difficulty / 100) * 1.0
+
+            if state["rules"].get("jump_in"):
+                # Non-blocking poll for the duration — player can press J to jump in later
+                stdscr.nodelay(True)
+                time.sleep(delay)
+                stdscr.getch()   # drain any buffered key (jump-in handling lives elsewhere)
+                stdscr.nodelay(False)
+            else:
+                time.sleep(delay)
+
+            result = bot_ai.bot_turn(state, current, difficulty)
             name   = bot["name"]
 
             if result["action"] == "played":
                 card = result["card"]
-                sym  = classic.CARD_SYMBOLS.get(card[1], card[1])
+                sym  = classic.card_symbol(card[1], rules=state["rules"],
+                                           direction=state["direction"])
                 col  = result.get("chosen_colour", "")
                 msg  = f"{name} played {sym}"
                 if col: msg += f" → calls {col}"
@@ -546,7 +613,6 @@ def run_game(stdscr, state):
                 action = _draw_win_screen(stdscr, name, pts, state)
                 return action
 
-            time.sleep(0.4)
             continue
 
         key = stdscr.getch()
@@ -576,11 +642,40 @@ def run_game(stdscr, state):
                     pts    = classic.calculate_scores(state, 0) if points_mode else None
                     action = _draw_win_screen(stdscr, "You", pts, state)
                     return action
-                sym = classic.CARD_SYMBOLS.get(card[1], card[1])
+                sym = classic.card_symbol(card[1], rules=state["rules"], direction=state["direction"])
                 add_log(f"You played {sym} → calls {chosen_colour}")
-                uno_called    = False
-                selected      = min(selected, len(hand) - 1)
-                scroll_offset = max(0, scroll_offset - 1)
+                uno_called     = False
+                drew_this_turn = False
+                selected       = min(selected, len(hand) - 1)
+                scroll_offset  = max(0, scroll_offset - 1)
+            continue
+
+# ── Swap target picking mode (7-swap rule) ────────────────────────
+        if picking_swap:
+            num_others = state["num_players"] - 1
+            if key == curses.KEY_UP:
+                swap_target = (swap_target - 1) % num_others
+            elif key == curses.KEY_DOWN:
+                swap_target = (swap_target + 1) % num_others
+            elif key in (curses.KEY_ENTER, ord('\n'), ord('\r')):
+                real_target = swap_target + 1
+                card        = hand[selected]
+                result      = classic.play_turn(state, 0, card_idx=selected,
+                                                swap_target=real_target)
+                picking_swap = False
+                if result["action"] == "won":
+                    pts    = classic.calculate_scores(state, 0) if points_mode else None
+                    action = _draw_win_screen(stdscr, "You", pts, state)
+                    return action
+                target_name = state["bots"][swap_target]["name"]
+                sym = classic.card_symbol(card[1], rules=state["rules"], direction=state["direction"])
+                add_log(f"You played {sym} — swapped hands with {target_name}!")
+                uno_called     = False
+                drew_this_turn = False
+                selected       = min(selected, len(hand) - 1)
+                scroll_offset  = 0
+            elif key in (ord('q'), ord('Q'), curses.KEY_LEFT):
+                picking_swap = False
             continue
 
         # ── Normal navigation ─────────────────────────────────────────────
@@ -591,15 +686,39 @@ def run_game(stdscr, state):
             selected = min(len(hand), selected + 1)
 
         elif key in (ord('d'), ord('D')):
-            result = classic.play_turn(state, 0, card_idx=None)
-            if result["action"] == "drew":
-                card = result.get("card")
-                add_log(f"You drew {classic.CARD_SYMBOLS.get(card[1], card[1]) if card else result.get('amount', 1)}")
-            elif result["action"] == "force_played":
-                add_log(f"Force played {classic.CARD_SYMBOLS.get(result['card'][1], result['card'][1])}")
-            selected      = 0
-            scroll_offset = 0
-            uno_called    = False
+            if drew_this_turn:
+                # already drew — pass turn
+                classic.next_player(state)
+                drew_this_turn = False
+                selected       = 0
+                scroll_offset  = 0
+                uno_called     = False
+            elif state["pending_draw"] > 0:
+                # forced penalty draw — must take it, turn ends
+                result = classic.play_turn(state, 0, card_idx=None)
+                add_log(f"You drew {result.get('amount', state['pending_draw'])} cards (penalty)")
+                drew_this_turn = False
+                selected       = 0
+                scroll_offset  = 0
+                uno_called     = False
+            else:
+                drawn = classic.draw_card(state["deck"], state["discard"])
+                hand.append(drawn)
+                if state["rules"].get("draw_and_play") and \
+                   classic.can_play(drawn, state["discard"][-1], state["active_colour"], state["rules"]):
+                    drew_this_turn = True
+                    selected       = len(hand) - 1
+                    scroll_offset  = max(0, selected - max(1, (panel_w - 2 - 7 - 2) // 5) + 1)
+                    sym = classic.card_symbol(drawn[1], rules=state["rules"], direction=state["direction"])
+                    add_log(f"You drew {sym} — it's playable! Play it or D to pass")
+                else:
+                    # draw_and_play off, or card not playable — turn ends immediately
+                    classic.next_player(state)
+                    sym = classic.card_symbol(drawn[1], rules=state["rules"], direction=state["direction"])
+                    add_log(f"You drew {sym}")
+                    selected      = 0
+                    scroll_offset = 0
+                    uno_called    = False
 
         elif key in (ord('u'), ord('U')):
             if len(hand) == 2:
@@ -608,33 +727,69 @@ def run_game(stdscr, state):
 
         elif key in (curses.KEY_ENTER, ord('\n'), ord('\r')):
             if selected == len(hand):
-                result = classic.play_turn(state, 0, card_idx=None)
-                if result["action"] == "drew":
-                    card = result.get("card")
-                    add_log(f"You drew {classic.CARD_SYMBOLS.get(card[1], card[1]) if card else '?'}")
-                selected      = 0
-                scroll_offset = 0
-                uno_called    = False
+                # Draw button selected
+                if drew_this_turn:
+                    classic.next_player(state)
+                    drew_this_turn = False
+                    selected       = 0
+                    scroll_offset  = 0
+                    uno_called     = False
+                elif state["pending_draw"] > 0:
+                    result = classic.play_turn(state, 0, card_idx=None)
+                    add_log(f"You drew {result.get('amount', state['pending_draw'])} cards (penalty)")
+                    drew_this_turn = False
+                    selected       = 0
+                    scroll_offset  = 0
+                    uno_called     = False
+                else:
+                    drawn = classic.draw_card(state["deck"], state["discard"])
+                    hand.append(drawn)
+                    if state["rules"].get("draw_and_play") and \
+                       classic.can_play(drawn, state["discard"][-1], state["active_colour"], state["rules"]):
+                        drew_this_turn = True
+                        selected       = len(hand) - 1
+                        scroll_offset  = max(0, selected - max(1, (panel_w - 2 - 7 - 2) // 5) + 1)
+                        sym = classic.card_symbol(drawn[1], rules=state["rules"], direction=state["direction"])
+                        add_log(f"You drew {sym} — it's playable! Play it or Enter/D to pass")
+                    else:
+                        classic.next_player(state)
+                        sym = classic.card_symbol(drawn[1], rules=state["rules"], direction=state["direction"])
+                        add_log(f"You drew {sym}")
+                        selected      = 0
+                        scroll_offset = 0
+                        uno_called    = False
             else:
                 card    = hand[selected]
                 rules   = state["rules"]
                 pending = state["pending_draw"]
+
+                # When drew_this_turn, only the drawn card (last in hand) is playable
+                if drew_this_turn and selected != len(hand) - 1:
+                    add_log("You can only play the card you just drew")
+                    continue
 
                 if not classic.can_play(card, state["discard"][-1],
                                         state["active_colour"], rules, pending):
                     add_log("That card cannot be played right now")
                     continue
 
+                # UNO penalty — fires but play still proceeds
                 if len(hand) == 2 and not uno_called:
                     add_log("Forgot to call UNO! Drawing 2 penalty cards...")
                     for _ in range(2):
                         hand.append(classic.draw_card(state["deck"], state["discard"]))
-                    continue
+                    # penalty cards appended to end — selected index still valid
 
                 if card[0] == "wild":
                     picking_colour = True
                     colour_idx     = 0
                     add_log("Up/Down to pick colour, Enter to confirm, Left/Right to cancel")
+                    continue
+
+                if card[1] == "7" and rules.get("seven_swap") and state["num_players"] > 1:
+                    picking_swap = True
+                    swap_target  = 0
+                    add_log("Up/Down to pick who to swap with, Enter to confirm, Q/Left to cancel")
                     continue
 
                 result = classic.play_turn(state, 0, card_idx=selected)
@@ -643,10 +798,12 @@ def run_game(stdscr, state):
                     action = _draw_win_screen(stdscr, "You", pts, state)
                     return action
                 if result["action"] == "played":
-                    add_log(f"You played {classic.CARD_SYMBOLS.get(card[1], card[1])}")
-                    uno_called    = False
-                    selected      = min(selected, len(hand) - 1)
-                    scroll_offset = max(0, scroll_offset - 1)
+                    sym = classic.card_symbol(card[1], rules=state["rules"], direction=state["direction"])
+                    add_log(f"You played {sym}")
+                    uno_called     = False
+                    drew_this_turn = False
+                    selected       = min(selected, len(hand) - 1)
+                    scroll_offset  = max(0, scroll_offset - 1)
 
         elif key in (ord('q'), ord('Q')):
             return "menu"

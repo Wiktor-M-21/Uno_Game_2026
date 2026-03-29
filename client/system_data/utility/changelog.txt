@@ -1,3 +1,20 @@
+1.0.5
+-- Single Player Classic --
+
+- All rules and settings when toggled now work so that you can customise your game
+- Fixed basic game rules
+    - +4 cannot be placed on a +2
+    - When caught with 1 card without calling uno game doesn’t play that card
+    - Fixed bug where +2 could be played on a +4
+    - 7 (swap) now works
+    - When a player draws cards they can still play their turn
+    - Slowed down bot opponents to be able to jump in
+
+1.0.4
+-- Minor bug fixes --
+
+System_properties.ini and sp_settings.ini are now generated independently and made so that when updated they are not changed or reset
+
 1.0.3
 -- Minor bugs --
 Adjusted update page of Settings

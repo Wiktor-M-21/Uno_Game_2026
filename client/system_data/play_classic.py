@@ -15,6 +15,15 @@ CARD_SYMBOLS = {
     "wild":      "W",
 }
 
+# When seven_swap / zero_rotate rules are active the 7 and 0 get special symbols.
+# Direction: 1 = clockwise, -1 = anti-clockwise.
+def card_symbol(value, rules=None, direction=1):
+    if value == "7" and rules and rules.get("seven_swap"):
+        return "⇅7"
+    if value == "0" and rules and rules.get("zero_rotate"):
+        return "⟲0" if direction == 1 else "⟳0"
+    return CARD_SYMBOLS.get(value, value)
+
 COLOUR_ANSI = {
     "red":    "\033[91m",
     "green":  "\033[92m",
@@ -65,11 +74,12 @@ def load_settings():
         })
 
     rules = {
-        "stack_draws": sp_config.getboolean("rules", "stack_draws",  fallback=True),
-        "force_play":  sp_config.getboolean("rules", "force_play",   fallback=False),
-        "jump_in":     sp_config.getboolean("rules", "jump_in",      fallback=False),
-        "seven_swap":  sp_config.getboolean("rules", "seven_swap",   fallback=False),
-        "zero_rotate": sp_config.getboolean("rules", "zero_rotate",  fallback=False),
+        "stack_draws":   sp_config.getboolean("rules", "stack_draws",   fallback=True),
+        "force_play":    sp_config.getboolean("rules", "force_play",    fallback=False),
+        "jump_in":       sp_config.getboolean("rules", "jump_in",       fallback=False),
+        "seven_swap":    sp_config.getboolean("rules", "seven_swap",    fallback=False),
+        "zero_rotate":   sp_config.getboolean("rules", "zero_rotate",   fallback=False),
+        "draw_and_play": sp_config.getboolean("rules", "draw_and_play", fallback=True),
     }
 
     game = {
@@ -166,8 +176,8 @@ def can_play(card, top_card, active_colour, rules, pending_draw=0):
 
     if pending_draw > 0:
         if rules.get("stack_draws"):
-            if top_value == "draw_two"  and value == "draw_two":  return True
-            if top_value == "draw_four" and value == "draw_four": return True
+            if value == "draw_two"  and top_value == "draw_two":  return True
+            if value == "draw_four":                              return True  # +4 beats anything
         return False
 
     if colour == "wild":        return True
@@ -290,6 +300,7 @@ def play_turn(state, player_idx, card_idx=None, chosen_colour=None, swap_target=
     if len(hand) == 0:
         return {"action": "won", "player": player_idx}
 
+    # seven_swap: swap hands BEFORE apply_card (which calls next_player)
     if card[1] == "7" and rules["seven_swap"] and swap_target is not None:
         state["hands"][player_idx], state["hands"][swap_target] = \
             state["hands"][swap_target], state["hands"][player_idx]

@@ -47,6 +47,41 @@ UNO_BANNER = (f"""
         """)
 
 
+def build_main_menu_sidebar():
+    return {
+        "Single Player": {
+            "title": "Modes available",
+            "colour": "green",
+            "sections": [
+                {"heading": "Vs Bot", "body": "Play against computer-controlled opponents with adjustable difficulty and rules!"},
+                {"heading": "Practice Mode (Coming Soon)", "body": "Learn how different cards interact and stack in a risk-free environment. Practice with an infinite deck and no opponents!{red} (coming soon){/}"},
+            ]
+        },
+        "Multiplayer": {
+            "title": "Modes available",
+            "colour": "blue",
+            "sections": [
+                {"heading": "Pass and Play (Coming Soon)", "body": "Play with friends on the same device. Pass the device around as you play!"},
+                {"heading": "LAN (Local Area Network) (Coming Soon)", "body": "Play with others on the same network. Connect over Wi-Fi or Ethernet!"},
+                {"heading": "Online (Matchmaking) (Coming Soon)", "body": "Play with others online. Find random opponents or play with friends!"},
+            ]
+        },
+        "Settings": {
+            "title": "Adjust game preferences",
+            "colour": "yellow",
+            "sections": [
+                {"heading": "Account Settings (Coming Soon)", "body": "Manage your UCL (Uno Command Line) account, view stats, and customize your profile!"},
+                {"heading": "Update Settings", "body": "Adjust how Uno updates and view update history."},
+                {"heading": "Mods and Customization", "body": "Coming soon!"},
+                {"heading": "Other Settings (Coming Soon)", "body": "Adjust various other settings such as display options, controls, and more!"}
+            ]
+        },
+        "Exit": {
+            "title": "Exit the game",
+            "colour": "red",
+        }
+    }
+
 def build_update_sidebar():
     return {
         "Check for updates": {
@@ -155,7 +190,7 @@ def main():
     global latest_version, sp_config
 
     while True:
-        with menu("Main Menu", ["Single Player", "Multiplayer", "Settings", "Exit"], color="cyan", banner=UNO_BANNER) as m:
+        with menu("Main Menu", ["Single Player", "Multiplayer", "Settings", "Exit"], color="cyan", banner=UNO_BANNER,sidebars=build_main_menu_sidebar()) as m:
             # ── Single Player ────────────────────────────────────────────
             if m.is_selected("Single Player"):
                 while True:
