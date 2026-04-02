@@ -1,4 +1,10 @@
+1.0.6.1
+-- Update Settings --
+- Update broke the game if a user cancelled the update
+- Logic Error in relation to updating
+
 1.0.6
+
 -- Update Settings --
 - Added Manual backups and multiple backup support
     - You can now manually backup your game
