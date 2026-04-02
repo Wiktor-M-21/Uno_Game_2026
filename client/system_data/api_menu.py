@@ -133,7 +133,8 @@ def inline_number(label: str, current, min_val: int, max_val: int) -> tuple:
 
 # ── Global curses state ───────────────────────────────────────────────────────
 
-_stdscr = None
+_stdscr       = None
+_terminal_mode = False   # When True, skip curses and use plain terminal rendering
 
 
 def get_stdscr():
@@ -141,13 +142,55 @@ def get_stdscr():
     return _stdscr
 
 
+def set_terminal_mode(enabled: bool):
+    """Switch between curses UI and plain terminal UI (flag only, no session change)."""
+    global _terminal_mode
+    _terminal_mode = enabled
+
+
+def switch_terminal_mode(enabled: bool):
+    """
+    Safely switch between curses UI and plain terminal UI mid-session.
+
+    Unlike ``set_terminal_mode``, this also tears down or restarts the curses
+    session immediately so the change takes effect on the next menu render.
+    Safe to call from inside a nested menu stack — curses is only touched when
+    the root is active (i.e. _stdscr is set or needs to be set).
+    """
+    global _terminal_mode
+    if enabled == _terminal_mode:
+        return  # already in the requested mode
+    _terminal_mode = enabled
+    if enabled:
+        # Switching to terminal mode: tear curses down if it is running.
+        if _stdscr is not None:
+            _cleanup_curses()
+            os.system("stty sane")
+    else:
+        # Switching to curses mode: start curses if not already running.
+        os.system("cls" if os.name == "nt" else "clear")
+        os.system("cls" if os.name == "nt" else "clear")
+        if _stdscr is None:
+            _init_curses()
+
+
+
+
+
+def get_terminal_mode() -> bool:
+    return _terminal_mode
+
+
 def curses_control(type: str):
     """
     Manually start or stop the curses session.
+    No-op when terminal mode is active.
 
     type : "start" — initialise curses
            "end"   — tear down curses cleanly
     """
+    if _terminal_mode:
+        return
     if type == "start":
         _init_curses()
     elif type == "end":
@@ -343,15 +386,19 @@ def _draw_colored_banner(stdscr, banner: str, start_row: int) -> int:
     return row
 
 
-def _draw_custom_sidebar(stdscr, menu_pair: int, sidebar: dict):
+def _draw_custom_sidebar(stdscr, menu_pair: int, sidebar: dict,
+                         scroll_offset: int = 0) -> int:
     """
     Render a custom info sidebar on the right half of the screen.
 
     Parameters
     ----------
-    stdscr    : curses window
-    menu_pair : int   — fallback colour pair (the menu's own colour)
-    sidebar   : dict  — {"title": str, "colour": str, "sections": [...]}
+    stdscr        : curses window
+    menu_pair     : int   — fallback colour pair (the menu's own colour)
+    sidebar       : dict  — {"title": str, "colour": str, "sections": [...]}
+    scroll_offset : int   — number of content rows to skip at the top
+
+    Returns the total number of content rows (for scroll-limit calculation).
 
     The sidebar dict's "colour" key overrides menu_pair for the title/headings.
     If "colour" is absent or unrecognised, menu_pair is used instead.
@@ -359,23 +406,36 @@ def _draw_custom_sidebar(stdscr, menu_pair: int, sidebar: dict):
     h, w        = stdscr.getmaxyx()
     panel_x     = w // 2 + 4
     panel_width = w - panel_x - 2
-    row         = 3
+    draw_row    = 3          # screen row we're currently writing to
+    content_row = 0          # logical row index (before scroll)
 
     title       = sidebar.get("title", "")
     colour_name = sidebar.get("colour", "")
-    # Use the sidebar's own colour if valid, otherwise fall back to the menu colour.
     title_pair  = _colour_pair(colour_name, fallback=menu_pair)
     title_attr  = curses.color_pair(title_pair) | curses.A_BOLD
 
-    # ── Title ─────────────────────────────────────────────────────────────
-    _sidebar_addstr(stdscr, row, panel_x, title, base_attr=title_attr)
-    row += 1
-
+    # ── Title (always visible, not scrollable) ─────────────────────────────
+    _sidebar_addstr(stdscr, draw_row, panel_x, title, base_attr=title_attr)
+    draw_row += 1
     try:
-        stdscr.addstr(row, panel_x, "─" * panel_width)
+        stdscr.addstr(draw_row, panel_x, "─" * panel_width)
     except curses.error:
         pass
-    row += 2
+    draw_row += 2
+
+    def _emit(text_str, attr):
+        """Write one logical row, honouring scroll_offset and screen height."""
+        nonlocal draw_row, content_row
+        visible = (content_row >= scroll_offset) and (draw_row < h - 1)
+        if visible:
+            try:
+                stdscr.attron(attr)
+                stdscr.addstr(draw_row, panel_x, text_str[:panel_width])
+                stdscr.attroff(attr)
+            except curses.error:
+                pass
+            draw_row += 1
+        content_row += 1
 
     # ── Sections ──────────────────────────────────────────────────────────
     for section in sidebar.get("sections", []):
@@ -383,29 +443,29 @@ def _draw_custom_sidebar(stdscr, menu_pair: int, sidebar: dict):
         body    = section.get("body", "")
 
         if heading:
-            _sidebar_addstr(stdscr, row, panel_x, heading, base_attr=title_attr)
-            row += 1
+            visible = (content_row >= scroll_offset) and (draw_row < h - 1)
+            if visible:
+                _sidebar_addstr(stdscr, draw_row, panel_x, heading,
+                                base_attr=title_attr)
+                draw_row += 1
+            content_row += 1
 
         if body:
-            # Word-wrap the body, splitting on plain visible characters.
-            # Tags are not split across lines — whole words (including any
-            # tags they contain) move together.
             plain_words = _sidebar_plain(body).split()
-            # Rebuild word list paired with their original tagged versions.
-            # Strategy: split on whitespace boundaries in the original string,
-            # then strip leading/trailing whitespace from each chunk.
-            raw_words = [w for w in re.split(r'(\s+)', body) if w.strip()]
+            raw_words   = [w for w in re.split(r'(\s+)', body) if w.strip()]
             line_plain  = ""
             line_raw    = []
 
             for raw_word, plain_word in zip(raw_words, plain_words):
                 if line_plain and len(line_plain) + 1 + len(plain_word) > panel_width:
-                    # Flush current line
-                    col = panel_x
-                    for segment in line_raw:
-                        col = _sidebar_addstr(stdscr, row, col, segment,
-                                              base_attr=curses.A_DIM)
-                    row     += 1
+                    visible = (content_row >= scroll_offset) and (draw_row < h - 1)
+                    if visible:
+                        col = panel_x
+                        for segment in line_raw:
+                            col = _sidebar_addstr(stdscr, draw_row, col, segment,
+                                                  base_attr=curses.A_DIM)
+                        draw_row += 1
+                    content_row += 1
                     line_plain = plain_word
                     line_raw   = [raw_word]
                 else:
@@ -416,15 +476,36 @@ def _draw_custom_sidebar(stdscr, menu_pair: int, sidebar: dict):
                         line_plain = plain_word
                         line_raw   = [raw_word]
 
-            # Flush final line
             if line_raw:
-                col = panel_x
-                for segment in line_raw:
-                    col = _sidebar_addstr(stdscr, row, col, segment,
-                                          base_attr=curses.A_DIM)
-                row += 1
+                visible = (content_row >= scroll_offset) and (draw_row < h - 1)
+                if visible:
+                    col = panel_x
+                    for segment in line_raw:
+                        col = _sidebar_addstr(stdscr, draw_row, col, segment,
+                                              base_attr=curses.A_DIM)
+                    draw_row += 1
+                content_row += 1
 
-        row += 1   # blank line between sections
+        # blank line between sections
+        _emit("", curses.A_NORMAL)
+
+    # Scroll hint at bottom of sidebar
+    if scroll_offset > 0:
+        try:
+            stdscr.attron(curses.A_DIM)
+            stdscr.addstr(3, panel_x + panel_width - 6, "▲ ,..")
+            stdscr.attroff(curses.A_DIM)
+        except curses.error:
+            pass
+    if content_row > scroll_offset + (h - 7):
+        try:
+            stdscr.attron(curses.A_DIM)
+            stdscr.addstr(h - 2, panel_x, "▼  . to scroll down")
+            stdscr.attroff(curses.A_DIM)
+        except curses.error:
+            pass
+
+    return content_row   # total logical rows — used by caller to cap scroll
 
 
 def _draw_mc_sidebar(stdscr, menu_pair: int, selected_item: tuple,
@@ -571,7 +652,9 @@ def _show(title: str, options: list, color: str, banner=None,
     if not selectable:
         return None, {}, {}
 
-    sel_pos = 0   # index into `selectable`
+    sel_pos        = 0   # index into `selectable`
+    scroll_offset  = 0   # first item index (into `items`) visible on screen
+    sidebar_scroll = 0   # logical row offset for sidebar content
 
     # ── Render + input loop ───────────────────────────────────────────────
     while True:
@@ -606,21 +689,42 @@ def _show(title: str, options: list, color: str, banner=None,
 
         # ── Sidebar ───────────────────────────────────────────────────────
         # Priority: multichoice gets its own sidebar; otherwise look up by label.
+        sidebar_total = 0
         if isinstance(selected_item, tuple) and selected_item[0] is MULTICHOICE_ITEM:
             _draw_mc_sidebar(stdscr, pair, selected_item, mc_values, mc_confirmed)
 
         elif isinstance(selected_item, tuple) and selected_item[0] is INLINE_NUMBER_ITEM:
             _, label, _, _, _ = selected_item
             if label in active_sidebars:
-                _draw_custom_sidebar(stdscr, pair, active_sidebars[label])
+                sidebar_total = _draw_custom_sidebar(
+                    stdscr, pair, active_sidebars[label], sidebar_scroll)
 
         elif isinstance(selected_item, str) and selected_item in active_sidebars:
-            _draw_custom_sidebar(stdscr, pair, active_sidebars[selected_item])
+            sidebar_total = _draw_custom_sidebar(
+                stdscr, pair, active_sidebars[selected_item], sidebar_scroll)
 
         # ── Option rows ───────────────────────────────────────────────────
-        cumulative_offset = 0   # extra rows consumed by inline_number hints
+        h, _w           = stdscr.getmaxyx()
+        max_item_rows   = h - row - 2          # rows available for menu items
+        cumulative_offset = 0
+        item_row = 0   # logical row index within items list
+
         for i, item in enumerate(items):
-            y         = row + i + cumulative_offset
+            # Each item occupies at least 1 logical row; inline_number hint adds 1 more.
+            item_height = 1
+            if isinstance(item, tuple) and item[0] is INLINE_NUMBER_ITEM:
+                if i == selected_idx:
+                    item_height = 2
+
+            # Skip items above scroll window
+            if item_row < scroll_offset:
+                item_row += item_height
+                continue
+
+            y = row + (item_row - scroll_offset) + cumulative_offset
+            if y >= h - 1:
+                break   # no more room on screen
+
             is_focused = (i == selected_idx)
 
             if isinstance(item, tuple) and item[0] is TEXT_ITEM:
@@ -715,6 +819,24 @@ def _show(title: str, options: list, color: str, banner=None,
                 except curses.error:
                     pass
 
+            item_row += item_height
+
+        # Scroll hints for option list
+        if scroll_offset > 0:
+            try:
+                stdscr.attron(curses.A_DIM)
+                stdscr.addstr(row - 1, 4, "▲ more above")
+                stdscr.attroff(curses.A_DIM)
+            except curses.error:
+                pass
+        if item_row > scroll_offset + max_item_rows:
+            try:
+                stdscr.attron(curses.A_DIM)
+                stdscr.addstr(h - 2, 4, "▼ more below")
+                stdscr.attroff(curses.A_DIM)
+            except curses.error:
+                pass
+
         stdscr.refresh()
         key = stdscr.getch()
 
@@ -724,9 +846,26 @@ def _show(title: str, options: list, color: str, banner=None,
 
         if key == curses.KEY_UP and sel_pos > 0:
             sel_pos -= 1
+            sidebar_scroll = 0   # reset sidebar scroll on navigation
+            # Scroll up if cursor moves above the visible window
+            cursor_item = selectable[sel_pos]
+            if cursor_item < scroll_offset:
+                scroll_offset = cursor_item
 
         elif key == curses.KEY_DOWN and sel_pos < len(selectable) - 1:
             sel_pos += 1
+            sidebar_scroll = 0   # reset sidebar scroll on navigation
+            # Scroll down if cursor moves below the visible window
+            cursor_item = selectable[sel_pos]
+            h2, _ = stdscr.getmaxyx()
+            if cursor_item >= scroll_offset + (h2 - row - 2):
+                scroll_offset = cursor_item - (h2 - row - 3)
+
+        elif key == ord(','):
+            sidebar_scroll = max(0, sidebar_scroll - 1)
+
+        elif key == ord('.'):
+            sidebar_scroll = min(max(0, sidebar_total - 1), sidebar_scroll + 1)
 
         elif is_in:
             _, label, _, min_val, max_val = selected_item
@@ -774,14 +913,236 @@ def _show(title: str, options: list, color: str, banner=None,
     return selected_idx, mc_confirmed, in_values
 
 
+# ── Terminal-mode renderer ────────────────────────────────────────────────────
+
+def _show_terminal(title: str, options: list, color: str, banner=None,
+                   sidebars=None, dev: bool = False, on_change=None):
+    """
+    Plain-terminal equivalent of _show.
+    Two-column layout: menu on the left, sidebar on the right.
+    Uses shutil.get_terminal_size() so nothing ever wraps.
+    """
+    import shutil
+
+    ANSI = {
+        "cyan":    '\033[96m', "green":  '\033[92m', "blue":   '\033[94m',
+        "red":     '\033[91m', "yellow": '\033[93m', "magenta": '\033[95m',
+        "white":   '\033[97m',
+    }
+    RESET  = '\033[0m'
+    BOLD   = '\033[1m'
+    DIM    = '\033[2m'
+    accent = ANSI.get(color, '\033[96m')
+
+    sidebars_fn = sidebars if callable(sidebars) else (lambda: sidebars or {})
+
+    # ── Build item state ──────────────────────────────────────────────────
+    items        = []
+    mc_values    = {}
+    mc_confirmed = {}
+    in_values    = {}
+
+    for opt in options:
+        if isinstance(opt, tuple):
+            if opt[0] is TEXT_ITEM:
+                items.append(opt)
+            elif opt[0] is MULTICHOICE_ITEM:
+                _, question, choices, default = opt
+                keys                   = list(choices.keys())
+                current                = default if default in choices else keys[0]
+                mc_values[question]    = current
+                mc_confirmed[question] = current
+                items.append(opt)
+            elif opt[0] is INLINE_NUMBER_ITEM:
+                _, label, current, min_val, max_val = opt
+                in_values[label] = current
+                items.append(opt)
+        else:
+            items.append(opt)
+
+    selectable  = [i for i, o in enumerate(items)
+                   if not (isinstance(o, tuple) and o[0] is TEXT_ITEM)]
+    if not selectable:
+        return None, {}, {}
+
+    num_to_item = {n + 1: idx for n, idx in enumerate(selectable)}
+    hover_num   = 1
+
+    def _wrap(text: str, width: int) -> list:
+        """Word-wrap plain text to a list of lines of at most `width` chars."""
+        words, lines, line = text.split(), [], ""
+        for w in words:
+            if len(line) + len(w) + (1 if line else 0) > width:
+                if line:
+                    lines.append(line)
+                line = w
+            else:
+                line = f"{line} {w}".strip()
+        if line:
+            lines.append(line)
+        return lines or [""]
+
+    def _pad(s: str, width: int) -> str:
+        """Pad/truncate a plain string to exactly `width` chars."""
+        visible = len(s)
+        if visible >= width:
+            return s[:width]
+        return s + " " * (width - visible)
+
+    while True:
+        term_w   = shutil.get_terminal_size((80, 24)).columns
+
+        os.system("cls" if os.name == "nt" else "clear")
+
+        active_sidebars = sidebars_fn()
+
+        # ── Print banner full-width above the two-column layout ───────────
+        # Banner lines contain ANSI escapes whose byte length != visible width,
+        # so they must never be sliced or padded — just print them raw.
+        if banner:
+            for line in banner.splitlines():
+                print(line)
+            print()
+
+        # ── Build left column lines ───────────────────────────────────────
+        left_lines = []
+
+        left_lines.append(f"{accent}{BOLD}{title}{RESET}")
+        left_lines.append("")
+
+        n = 1
+        for item in items:
+            if isinstance(item, tuple) and item[0] is TEXT_ITEM:
+                label = item[1]
+                if label:
+                    left_lines.append(f"{DIM}  {label[:term_w - 4]}{RESET}")
+                else:
+                    left_lines.append("")
+            elif isinstance(item, tuple) and item[0] is MULTICHOICE_ITEM:
+                _, question, choices, _ = item
+                confirmed_val = mc_confirmed[question]
+                tokens = ""
+                for k in choices:
+                    if k == confirmed_val:
+                        tokens += f" {accent}[{k}]✓{RESET}"
+                    else:
+                        tokens += f" {DIM}{k}{RESET}"
+                left_lines.append(f"  {accent}{n}.{RESET} {question}{tokens}")
+                n += 1
+            elif isinstance(item, tuple) and item[0] is INLINE_NUMBER_ITEM:
+                _, label, _, min_val, max_val = item
+                val    = in_values[label]
+                left_lines.append(
+                    f"  {accent}{n}.{RESET} {label}  "
+                    f"{accent}< {val} >{RESET}  {DIM}({min_val}–{max_val}){RESET}"
+                )
+                n += 1
+            else:
+                left_lines.append(f"  {accent}{n}.{RESET} {item}")
+                n += 1
+
+        # ── Render menu lines ───────────────────────────────────────────
+        for line in left_lines:
+            print(line)
+
+        # ── Render ALL sidebars below the menu ─────────────────────────
+        if active_sidebars:
+            any_printed = False
+            for n_check, idx_check in num_to_item.items():
+                it = items[idx_check]
+                if isinstance(it, str):
+                    sb_key = it
+                elif isinstance(it, tuple) and it[0] in (MULTICHOICE_ITEM, INLINE_NUMBER_ITEM):
+                    sb_key = it[1]
+                else:
+                    continue
+                if sb_key not in active_sidebars:
+                    continue
+                sb       = active_sidebars[sb_key]
+                sb_col   = ANSI.get(sb.get("colour", ""), accent)
+                sb_title = _sidebar_plain(sb.get("title", ""))
+                sections = sb.get("sections", [])
+                if not sb_title and not sections:
+                    continue
+                if not any_printed:
+                    print(f"\n{DIM}{chr(0x2500) * min(term_w, 60)}{RESET}")
+                    any_printed = True
+                label_str = f"[{n_check}]  {sb_title}" if sb_title else f"[{n_check}]"
+                print(f"\n{sb_col}{BOLD}{label_str}{RESET}")
+                wrap_w = min(term_w - 6, 70)
+                for section in sections:
+                    h_text = _sidebar_plain(section.get("heading", ""))
+                    b_text = _sidebar_plain(section.get("body", ""))
+                    if h_text:
+                        print(f"  {sb_col}{h_text}{RESET}")
+                    if b_text:
+                        for wrapped_line in _wrap(b_text, wrap_w):
+                            print(f"{DIM}    {wrapped_line}{RESET}")
+
+        # ── Input ─────────────────────────────────────────────────────────
+        print(f"\n{DIM}Enter number:{RESET} ", end="", flush=True)
+        raw = input().strip()
+
+        if not raw.isdigit():
+            continue
+        choice = int(raw)
+        if choice not in num_to_item:
+            continue
+
+        hover_num    = choice
+        item_idx     = num_to_item[choice]
+        item         = items[item_idx]
+
+        if isinstance(item, tuple) and item[0] is MULTICHOICE_ITEM:
+            _, question, choices, _ = item
+            keys = list(choices.keys())
+            idx  = keys.index(mc_values[question])
+            mc_values[question]    = keys[(idx + 1) % len(keys)]
+            mc_confirmed[question] = mc_values[question]
+            if on_change:
+                on_change(question, mc_confirmed[question])
+            continue
+
+        if isinstance(item, tuple) and item[0] is INLINE_NUMBER_ITEM:
+            _, label, _, min_val, max_val = item
+            print(f"  New value for '{label}' "
+                  f"(current: {in_values[label]}, {min_val}–{max_val}): ", end="")
+            v = input().strip()
+            if v.lstrip('-').isdigit():
+                in_values[label] = max(min_val, min(max_val, int(v)))
+            continue
+
+        return item_idx, mc_confirmed, in_values
+
+
+def terminal_confirm(prompt: str, warning: str = "") -> bool:
+    """
+    Plain-terminal equivalent of confirm_screen.
+    Used automatically when terminal mode is active.
+    """
+    os.system("cls" if os.name == "nt" else "clear")
+    print(f"\n  {prompt}")
+    if warning:
+        print(f"  \033[91m{warning}\033[0m")
+    raw = input("\n  Confirm? (y/N): ").strip().lower()
+    return raw == "y"
+
+
 # ── Standalone input helpers ──────────────────────────────────────────────────
 
 def number_input(stdscr, prompt: str, current, min_val: int, max_val: int,
                  pair: int) -> int:
     """
-    Full-screen numeric input prompt.  Left/Right to nudge, type to enter.
-    Returns the confirmed integer value.
+    Full-screen numeric input prompt.  Falls back to plain terminal when
+    terminal mode is active.  Returns the confirmed integer value.
     """
+    if _terminal_mode:
+        os.system("cls" if os.name == "nt" else "clear")
+        print(f"{prompt}  (current: {current}, min:{min_val} max:{max_val})")
+        raw = input("Enter value: ").strip()
+        if raw.lstrip('-').isdigit():
+            return max(min_val, min(max_val, int(raw)))
+        return int(current)
     val   = int(current)
     typed = ""
 
@@ -831,9 +1192,14 @@ def number_input(stdscr, prompt: str, current, min_val: int, max_val: int,
 
 def text_input(stdscr, prompt: str, current: str, pair: int) -> str:
     """
-    Full-screen text input prompt.  Type to edit, Backspace to delete.
-    Returns the confirmed string (max 20 characters).
+    Full-screen text input prompt.  Falls back to plain terminal when
+    terminal mode is active.  Returns the confirmed string (max 20 chars).
     """
+    if _terminal_mode:
+        os.system("cls" if os.name == "nt" else "clear")
+        print(f"{prompt}  (current: '{current}')")
+        raw = input("Enter value: ").strip()
+        return raw[:20] if raw else current
     curses.curs_set(1)
     val = list(current)
 
@@ -865,6 +1231,360 @@ def text_input(stdscr, prompt: str, current: str, pair: int) -> str:
             if len(val) < 20:
                 val.append(chr(key))
 
+
+def multiline_input(title: str, initial: str, pair: int, readonly: bool = False) -> str:
+    """
+    Full-screen multi-line text editor.
+
+    Arrow keys move the cursor.  Enter adds a newline.  Type normally to insert.
+    Backspace deletes the character before the cursor.
+    Ctrl+S (or Ctrl+X) saves and exits.  Escape cancels (returns original text).
+
+    In readonly mode (e.g. for viewing update notes) only Escape / Ctrl+S exits.
+
+    Falls back to a plain terminal viewer/editor when terminal mode is active.
+
+    Returns the edited string, or `initial` if cancelled.
+    """
+    if _terminal_mode:
+        os.system("cls" if os.name == "nt" else "clear")
+        print(f"\n  {title}\n  {'─' * len(title)}\n")
+        if readonly:
+            for line in (initial or "(no notes)").splitlines():
+                print(f"  {line}")
+            input("\n  Press Enter to return...")
+            return initial
+        else:
+            print(f"  Current notes:\n")
+            for line in (initial or "").splitlines():
+                print(f"    {line}")
+            print("\n  Enter new notes (blank line + Enter to finish):\n")
+            lines, line = [], ""
+            while True:
+                line = input("  ")
+                if line == "" and lines and lines[-1] == "":
+                    break
+                lines.append(line)
+            return "\n".join(lines).rstrip()
+
+    stdscr = _stdscr
+    curses.curs_set(1)
+
+    # Split text into a list-of-lists (rows of chars)
+    rows = [list(r) for r in initial.split("\n")]
+    if not rows:
+        rows = [[]]
+
+    cur_row = 0
+    cur_col = 0
+    saved   = False
+
+    def _clamp():
+        nonlocal cur_row, cur_col
+        cur_row = max(0, min(cur_row, len(rows) - 1))
+        cur_col = max(0, min(cur_col, len(rows[cur_row])))
+
+    while True:
+        stdscr.clear()
+        h, w = stdscr.getmaxyx()
+        edit_area_top    = 4
+        edit_area_bottom = h - 3
+        edit_area_height = edit_area_bottom - edit_area_top
+
+        # Title bar
+        try:
+            stdscr.attron(curses.color_pair(pair) | curses.A_BOLD)
+            stdscr.addstr(1, 4, title[:w - 6])
+            stdscr.attroff(curses.color_pair(pair) | curses.A_BOLD)
+            stdscr.addstr(2, 4, "─" * min(w - 8, 60))
+        except curses.error:
+            pass
+
+        # Hint bar at bottom
+        hint = "Ctrl+S to save  |  Esc to cancel" if not readonly else "Esc to close"
+        try:
+            stdscr.attron(curses.A_DIM)
+            stdscr.addstr(h - 2, 4, hint[:w - 6])
+            stdscr.attroff(curses.A_DIM)
+        except curses.error:
+            pass
+
+        # Scroll so cursor row is always visible
+        scroll = max(0, cur_row - edit_area_height + 1)
+
+        # Render text rows
+        for screen_r, row_idx in enumerate(range(scroll, scroll + edit_area_height)):
+            y = edit_area_top + screen_r
+            if y >= edit_area_bottom:
+                break
+            if row_idx < len(rows):
+                line_text = "".join(rows[row_idx])[:(w - 6)]
+                try:
+                    stdscr.addstr(y, 4, line_text)
+                except curses.error:
+                    pass
+            # Cursor
+            if row_idx == cur_row:
+                cursor_x = 4 + cur_col
+                if cursor_x < w - 1:
+                    try:
+                        stdscr.move(y, cursor_x)
+                    except curses.error:
+                        pass
+
+        stdscr.refresh()
+        key = stdscr.getch()
+
+        # Ctrl+S (19) or Ctrl+X (24)
+        if key in (19, 24):
+            saved = True
+            break
+        elif key == 27:  # Escape
+            break
+        elif readonly:
+            continue
+        elif key in (curses.KEY_ENTER, ord('\n'), ord('\r')):
+            # Split current row at cursor
+            rest = rows[cur_row][cur_col:]
+            rows[cur_row] = rows[cur_row][:cur_col]
+            rows.insert(cur_row + 1, rest)
+            cur_row += 1
+            cur_col  = 0
+        elif key in (curses.KEY_BACKSPACE, 127, 8):
+            if cur_col > 0:
+                rows[cur_row].pop(cur_col - 1)
+                cur_col -= 1
+            elif cur_row > 0:
+                # Merge with previous row
+                cur_col = len(rows[cur_row - 1])
+                rows[cur_row - 1].extend(rows[cur_row])
+                rows.pop(cur_row)
+                cur_row -= 1
+        elif key == curses.KEY_UP:
+            cur_row -= 1
+            _clamp()
+        elif key == curses.KEY_DOWN:
+            cur_row += 1
+            _clamp()
+        elif key == curses.KEY_LEFT:
+            if cur_col > 0:
+                cur_col -= 1
+            elif cur_row > 0:
+                cur_row -= 1
+                cur_col = len(rows[cur_row])
+        elif key == curses.KEY_RIGHT:
+            if cur_col < len(rows[cur_row]):
+                cur_col += 1
+            elif cur_row < len(rows) - 1:
+                cur_row += 1
+                cur_col  = 0
+        elif key == curses.KEY_HOME:
+            cur_col = 0
+        elif key == curses.KEY_END:
+            cur_col = len(rows[cur_row])
+        elif 32 <= key <= 126:
+            rows[cur_row].insert(cur_col, chr(key))
+            cur_col += 1
+
+    curses.curs_set(0)
+    if saved:
+        return "\n".join("".join(r) for r in rows)
+    return initial
+
+
+def backup_editor(pair: int, initial_title: str = "", initial_notes: str = ""):
+    """
+    Full-screen curses editor with two fields: backup title and notes.
+
+    Tab / Shift-Tab switches focus between fields.
+    F2 saves and exits.  Escape cancels (returns None, None).
+
+    Returns (title_str, notes_str) on save, or (None, None) on cancel.
+    """
+    stdscr = _stdscr
+    try:
+        curses.curs_set(1)
+
+        # ── Field state ───────────────────────────────────────────────────────
+        title_chars = list(initial_title)
+        notes_rows  = [list(r) for r in (initial_notes or "").split("\n")]
+        if not notes_rows:
+            notes_rows = [[]]
+
+        focus    = 0   # 0 = title field, 1 = notes area
+        t_col    = len(title_chars)   # cursor col in title
+        n_row    = 0                  # cursor row in notes
+        n_col    = 0                  # cursor col in notes
+        n_scroll = 0                  # scroll offset for notes
+
+        def _clamp_notes():
+            nonlocal n_row, n_col
+            n_row = max(0, min(n_row, len(notes_rows) - 1))
+            n_col = max(0, min(n_col, len(notes_rows[n_row])))
+
+        while True:
+            stdscr.clear()
+            h, w = stdscr.getmaxyx()
+
+            # ── Chrome ────────────────────────────────────────────────────────
+            try:
+                stdscr.attron(curses.color_pair(pair) | curses.A_BOLD)
+                stdscr.addstr(1, 4, "Create Backup")
+                stdscr.attroff(curses.color_pair(pair) | curses.A_BOLD)
+                stdscr.attron(curses.color_pair(pair))
+                stdscr.addstr(2, 4, "─" * min(40, w - 8))
+                stdscr.attroff(curses.color_pair(pair))
+            except curses.error:
+                pass
+
+            hint = "Tab = switch field   F2 = save   Esc = cancel"
+            try:
+                stdscr.attron(curses.color_pair(pair) | curses.A_DIM)
+                stdscr.addstr(h - 2, 4, hint[:w - 6])
+                stdscr.attroff(curses.color_pair(pair) | curses.A_DIM)
+            except curses.error:
+                pass
+
+            # ── Title field ───────────────────────────────────────────────────
+            title_label_attr = (curses.color_pair(pair) | curses.A_BOLD) if focus == 0 else curses.A_DIM
+            try:
+                stdscr.attron(title_label_attr)
+                stdscr.addstr(4, 4, "Title:")
+                stdscr.attroff(title_label_attr)
+            except curses.error:
+                pass
+
+            title_display = "".join(title_chars)[:(w - 14)]
+            title_box_attr = curses.color_pair(pair) if focus == 0 else 0
+            try:
+                if focus == 0:
+                    stdscr.attron(title_box_attr)
+                stdscr.addstr(4, 11, title_display or " ")
+                if focus == 0:
+                    stdscr.attroff(title_box_attr)
+            except curses.error:
+                pass
+
+            # ── Notes field ───────────────────────────────────────────────────
+            notes_label_attr = (curses.color_pair(pair) | curses.A_BOLD) if focus == 1 else curses.A_DIM
+            try:
+                stdscr.attron(notes_label_attr)
+                stdscr.addstr(6, 4, "Notes:")
+                stdscr.attroff(notes_label_attr)
+            except curses.error:
+                pass
+
+            notes_top    = 7
+            notes_bottom = h - 4
+            notes_height = notes_bottom - notes_top
+
+            if focus == 1:
+                n_scroll = max(0, n_row - notes_height + 1)
+
+            for screen_r, row_idx in enumerate(range(n_scroll, n_scroll + notes_height)):
+                y = notes_top + screen_r
+                if y >= notes_bottom:
+                    break
+                if row_idx < len(notes_rows):
+                    line_text = "".join(notes_rows[row_idx])[:(w - 8)]
+                    try:
+                        stdscr.addstr(y, 6, line_text)
+                    except curses.error:
+                        pass
+
+            # ── Place cursor ──────────────────────────────────────────────────
+            try:
+                if focus == 0:
+                    stdscr.move(4, 11 + min(t_col, w - 15))
+                else:
+                    cy = notes_top + (n_row - n_scroll)
+                    cx = 6 + n_col
+                    if notes_top <= cy < notes_bottom and cx < w - 1:
+                        stdscr.move(cy, cx)
+            except curses.error:
+                pass
+
+            stdscr.refresh()
+            key = stdscr.getch()
+
+            # ── Global keys ───────────────────────────────────────────────────
+            if key == curses.KEY_F2:
+                curses.curs_set(0)
+                return "".join(title_chars), "\n".join("".join(r) for r in notes_rows)
+            elif key == 27:  # Escape
+                curses.curs_set(0)
+                return None, None
+            elif key == ord('\t'):  # Tab — switch focus
+                focus = 1 - focus
+                continue
+
+            # ── Title field keys ──────────────────────────────────────────────
+            if focus == 0:
+                if key in (curses.KEY_BACKSPACE, 127, 8):
+                    if title_chars:
+                        title_chars.pop(t_col - 1)
+                        t_col = max(0, t_col - 1)
+                elif key == curses.KEY_LEFT:
+                    t_col = max(0, t_col - 1)
+                elif key == curses.KEY_RIGHT:
+                    t_col = min(len(title_chars), t_col + 1)
+                elif key == curses.KEY_HOME:
+                    t_col = 0
+                elif key == curses.KEY_END:
+                    t_col = len(title_chars)
+                elif key in (curses.KEY_ENTER, ord('\n'), ord('\r')):
+                    focus = 1  # Enter moves to notes
+                elif 32 <= key <= 126:
+                    title_chars.insert(t_col, chr(key))
+                    t_col += 1
+
+            # ── Notes field keys ──────────────────────────────────────────────
+            else:
+                if key in (curses.KEY_ENTER, ord('\n'), ord('\r')):
+                    rest = notes_rows[n_row][n_col:]
+                    notes_rows[n_row] = notes_rows[n_row][:n_col]
+                    notes_rows.insert(n_row + 1, rest)
+                    n_row += 1
+                    n_col  = 0
+                elif key in (curses.KEY_BACKSPACE, 127, 8):
+                    if n_col > 0:
+                        notes_rows[n_row].pop(n_col - 1)
+                        n_col -= 1
+                    elif n_row > 0:
+                        n_col = len(notes_rows[n_row - 1])
+                        notes_rows[n_row - 1].extend(notes_rows[n_row])
+                        notes_rows.pop(n_row)
+                        n_row -= 1
+                elif key == curses.KEY_UP:
+                    n_row -= 1
+                    _clamp_notes()
+                elif key == curses.KEY_DOWN:
+                    n_row += 1
+                    _clamp_notes()
+                elif key == curses.KEY_LEFT:
+                    if n_col > 0:
+                        n_col -= 1
+                    elif n_row > 0:
+                        n_row -= 1
+                        n_col = len(notes_rows[n_row])
+                elif key == curses.KEY_RIGHT:
+                    if n_col < len(notes_rows[n_row]):
+                        n_col += 1
+                    elif n_row < len(notes_rows) - 1:
+                        n_row += 1
+                        n_col  = 0
+                elif key == curses.KEY_HOME:
+                    n_col = 0
+                elif key == curses.KEY_END:
+                    n_col = len(notes_rows[n_row])
+                elif 32 <= key <= 126:
+                    notes_rows[n_row].insert(n_col, chr(key))
+                    n_col += 1
+    except curses.error:
+        print("Backup creation cancelled. Unable to create backup in terminal mode.")
+        print("Disable terminal mode to use this feature.")
+        input("Press Enter to continue...")
+        return None, None
 
 # ── menu context manager ──────────────────────────────────────────────────────
 
@@ -925,10 +1645,11 @@ class menu:
         self._is_root  = len(menu._stack) == 0
 
     def __enter__(self):
-        if self._is_root:
+        if self._is_root and not _terminal_mode:
             _init_curses()
         menu._stack.append(self)
-        self.selected, self.values, self.in_values = _show(
+        renderer = _show_terminal if _terminal_mode else _show
+        self.selected, self.values, self.in_values = renderer(
             self.title, self.options, self.color,
             self.banner, self.sidebars, self.dev, self.on_change,
         )
@@ -936,7 +1657,7 @@ class menu:
 
     def __exit__(self, *args):
         menu._stack.pop()
-        if self._is_root:
+        if self._is_root and not _terminal_mode:
             _cleanup_curses()
 
     def is_selected(self, label) -> bool:

@@ -1,3 +1,17 @@
+1.0.6
+-- Update Settings --
+- Added Manual backups and multiple backup support
+    - You can now manually backup your game
+    - You can edit backups
+    - You can remove backups
+- Added Terminal mode to be able to use without curses module (Beta feature enabled with dev mode)
+- Added Dev mode available through latest update settings
+- Added uid update values to ensure updates are correctly installed
+- Added update notes to backups
+- Changelog for specific version
+- Full changelog for all versions
+
+
 1.0.5
 -- Single Player Classic --
 

@@ -1,5 +1,5 @@
 import system_data.update as update
-from system_data.api_menu import menu, text, multichoice, inline_number, curses_control, number_input, text_input, get_stdscr
+from system_data.api_menu import menu, text, multichoice, inline_number, curses_control, number_input, text_input, multiline_input, backup_editor, get_stdscr, set_terminal_mode, get_terminal_mode, terminal_confirm, switch_terminal_mode
 import system_data.play_classic as classic
 from system_data.uno_ui import run_game
 from system_data import play_classic as classic
@@ -35,6 +35,14 @@ RESET   = '\033[0m'
 
 CURRENT_VERSION = config.get("version", "current_version", fallback="unknown")
 latest_version  = None
+
+
+DEV_MODE = config.getboolean("dev_mode", "developer_mode", fallback=False)
+
+# Apply terminal mode from config if previously saved
+_saved_terminal = config.getboolean("display", "terminal_mode", fallback=False)
+if _saved_terminal:
+    set_terminal_mode(True)
 
 UNO_BANNER = (f"""
 {RED}██╗   ██╗{YELLOW}███╗   ██╗{GREEN}███████╗{BLUE}  ██╗{RESET}
@@ -94,7 +102,56 @@ def build_update_sidebar():
             ]
         }
     }
+def build_settings_sidebar():
+    return {
+        "Display Options (BETA)": {
+            "title": "Display Options",
+            "sections": [
+                {"heading": "Terminal Mode", "body": "Use a simpler terminal-based interface instead of the curses UI. This is less visually appealing and has no sidebars, but can be more compatible with certain terminals and remote play."},
+            ]
+        },
+        "Mods and Customization": {
+            "title": "Mods and Customization",
+            "sections": [
+                {"heading": "Uno 4 supports mods!", "body": "You can create your own custom game modes, rules, cards, and more using the modding API. Mods can be shared with other players and easily toggled on or off."},
+                {"heading": "Mod Manager (Coming Soon)", "body": "Easily browse, install, and manage mods created by the community in the Mod Manager!"},
+            ]
+        },
+        "Account Settings": {
+            "title": "Account Settings",
+            "sections": [
+                {"heading": "UCL Account (Uno Command Line)", "body": "Create a UCL account to track your stats, customize your profile, and access online features!"},
+                {"heading": "Profile Customization (Coming Soon)", "body": "Customize your profile with different colors, icons, and more! Show off your unique style!"},
+            ]
+        },
+        "Backup and Update Settings": {
+            "title": "Backup and Update Settings",
+            "sections": [
+                {"heading": "Backup Game Data", "body": "Create a backup of your game data and settings."},
+                {"heading": "Update Settings", "body": "Adjust how Uno updates and view update history."},
+            ]
+        },
+        "Developer Options": {
+            "title": "Developer Options (Hidden)",
+            "colour": "red",
+            "sections": [
+                {"heading": "Developer Tools toggle", "body": "Toggle to enable or disable developer tools."},
+                {"heading": "View Terminal Output", "body": "View debug output from the game in the terminal."},
+                {"heading": "Restart Game to Apply Code Changes", "body": "Restart the game to apply changes made to the code. (For developers testing changes)"},
+            ]
+        }
 
+    }
+def build_display_sidebar():
+    return {
+        "Terminal Mode": {
+            "title": "Terminal Mode",
+            "sections": [
+                {"heading": "Terminal Mode", "body": "Terminal mode is a simpler display mode that uses basic text output instead of the curses-based UI. It is less visually appealing and has no sidebars, but can be more compatible with certain terminals and remote play setups."},
+                {"heading": "Use Terminal Mode?", "body": "Toggle terminal mode on or off. Changes take effect immediately."},
+            ]
+        }
+    }
 
 def build_classic_sidebar():
     return {
@@ -449,18 +506,132 @@ def main():
             # ── Settings ─────────────────────────────────────────────────
             if m.is_selected("Settings"):
                 while True:
-                    with menu("Settings", [
+                    settings_items = [
                         text("-- Choose settings category to change --"),
-                        text(""),
-                        "Update Settings",
-                        text(""),
+                        "Display Options (BETA)",
                         "Mods and Customization",
+                        "Account Settings",
                         text(""),
-                        "< Back",
-                    ], color="yellow") as sub:
+                        "Backup and Update Settings",
+                        text(""),
+                    ]
+                    DEV_MODE = config.getboolean("dev_mode", "developer_mode", fallback=False)
+                    if DEV_MODE == True:
+                        settings_items += ["Developer Options", text("")]
+                    settings_items.append("< Back")
+
+                    with menu("Settings", settings_items, color="yellow",sidebars=build_settings_sidebar) as sub:
+
+                        if sub.is_selected("Display Options (BETA)"):
+                            while True:
+                                cur_terminal = get_terminal_mode()
+                                disp_default = "yes" if cur_terminal else "no"
+                                disp_items = [
+                                    text("-- Adjust how the game is displayed --"),
+                                    text("")
+                                    ]
+                                BETA_MODE = config.getboolean("dev_mode", "beta_features", fallback=False)
+                                if BETA_MODE:
+                                    disp_items += [
+                                    multichoice(
+                                        "Terminal mode",
+                                        {
+                                            "yes": "Use plain terminal instead of curses UI",
+                                            "no":  "Use curses UI (default)",
+                                        },
+                                        default=disp_default,
+                                    ),
+                                    ]
+                                else:
+                                    disp_items += [
+                                        text("Terminal mode is currently a beta feature and can be enabled in Developer Options if you want to try it out. It is recommended to keep it disabled unless you are having issues with the curses UI."),
+                                    ]
+                                disp_items.append(text(""))
+                                disp_items.append("< Back")
+                                with menu("Display Options (BETA)", disp_items, color="yellow") as disp_menu:
+                                    new_val = disp_menu.get_value("Terminal mode")
+                                    if new_val is not None:
+                                        enabled = (new_val == "yes")
+                                        if enabled != cur_terminal:
+                                            switch_terminal_mode(enabled)
+                                            if not config.has_section("display"):
+                                                config.add_section("display")
+                                            config["display"]["terminal_mode"] = "True" if enabled else "False"
+                                            with open(CONFIG_PATH, "w") as f:
+                                                config.write(f)
+                                    if disp_menu.is_selected("< Back"):
+                                        break
+
+                        if DEV_MODE and sub.is_selected("Developer Options"):
+                            while True:
+                                raw         = config.get("dev_mode", "developer_mode", fallback="True")
+                                raw_beta    = config.get("dev_mode", "beta_features", fallback="False")
+                                default_val = "yes" if raw == "True" else "no"
+                                default_beta = "yes" if raw_beta == "True" else "no"
+                                with menu("Developer Options", [
+                                    text("-- Developer tools (dev_mode enabled) --"),
+                                    text(""),
+                                    multichoice(
+                                        "Developer Tools",
+                                        {
+                                            "yes": "Allows Uno to update automatically",
+                                            "no":  "Uno does not update automatically",
+                                        },
+                                        default=default_val
+                                    ),
+                                    "Restart game to apply code changes",
+                                    multichoice(
+                                        "Enable Beta Features",
+                                        {
+                                            "yes": "Allows for Beta features to be enabled in the game (Use with caution, may cause instability) (Display Options)",
+                                            "no": "False (default)",
+                                        },
+                                        default=default_beta
+                                    ),
+                                    text(""),
+                                    text("-- Terminal Tools --"),
+                                    text(""),
+                                    "View terminal output",
+                                    "Clear terminal",
+                                    text(""),
+                                    "< Back",
+                                ], color="red") as dev_menu:
+                                    
+                                    dev_menu_toggle = dev_menu.get_value("Developer Tools")
+                                    if not config.has_section("dev_mode"):
+                                        config.add_section("dev_mode")
+                                    config["dev_mode"]["developer_mode"] = "True" if dev_menu_toggle == "yes" else "False"
+
+                                    dev_menu_beta = dev_menu.get_value("Enable Beta Features")
+                                    if not config.has_section("dev_mode"):
+                                        config.add_section("dev_mode")
+                                    config["dev_mode"]["beta_features"] = "True" if dev_menu_beta == "yes" else "False" 
+
+                                    with open(CONFIG_PATH, "w") as f:
+                                        config.write(f)
+                                        DEV_MODE = False
+                                    if dev_menu.is_selected("View terminal output"):
+                                        curses_control("end")
+                                        print("\n── Terminal output ──────────────────")
+                                        print("(Scroll up to see previous output)")
+                                        input("\nPress Enter to return to menu...")
+                                        curses_control("start")
+                                    if dev_menu.is_selected("Clear terminal"):
+                                        curses_control("end")
+                                        print("\033c", end="")  # ANSI escape code to clear terminal
+                                        print("Terminal cleared.")
+                                        input("\nPress Enter to return to menu...")
+                                        curses_control("start")
+                                    if dev_menu.is_selected("Restart game to apply code changes"):
+                                        curses_control("end")
+                                        print("\nRestarting game...")
+                                        update.restart_game()
+
+                                    if dev_menu.is_selected("< Back"):
+                                        break
 
                         
-                        if sub.is_selected("Update Settings"):
+                        if sub.is_selected("Backup and Update Settings"):
                             while True:
                                 raw         = config.get("update", "auto_update", fallback="True")
                                 default_val = "yes" if raw == "True" else "no"
@@ -473,7 +644,34 @@ def main():
                                     preview_text      = " / ".join(changelog_preview) if changelog_preview else "No changelog"
                                     old_ex            = get_old_exists()
                                     old_ver           = get_old_version() if old_ex else None
+
+                                    def _backup_sections():
+                                        backups = update.list_backups()
+                                        if not backups:
+                                            return [{"heading": "No backups", "body": "Use 'Create a new backup' to make one."}]
+                                        sections = []
+                                        for b in backups:
+                                            props  = update.read_backup_properties(b)
+                                            source = props.get("source", "unknown")
+                                            fv     = props.get("from_version", "?")
+                                            tv     = props.get("to_version", "")
+                                            ver    = f"v{fv} → v{tv}" if tv else f"v{fv}"
+                                            tag    = "[update]" if source == "update" else "[manual]"
+                                            notes  = props.get("notes", "").strip()
+                                            notes_preview = notes.split("\n")[0][:60] if notes else ""
+                                            body = f"{ver}   {notes_preview}" if notes_preview else ver
+                                            sections.append({"heading": f"{tag} {b}", "body": body})
+                                        return sections
+
                                     return {
+                                        "Create a new backup": {
+                                            "title": "Existing Backups",
+                                            "sections": _backup_sections(),
+                                        },
+                                        "Manage backups": {
+                                            "title": "Existing Backups",
+                                            "sections": _backup_sections(),
+                                        },
                                         "Check for updates": {
                                             "title": "Updates",
                                             "sections": [
@@ -501,9 +699,12 @@ def main():
                                         },
                                     }
 
-                                with menu("Update Settings", [
-                                    text("-- Adjust update preferences --"),
+                                with menu("Backup and Update Settings", [
+                                    text("-- Manage backups --"),
+                                    "Create a new backup",
+                                    "Manage backups",
                                     text(""),
+                                    text("-- Adjust update preferences --"),
                                     "Check for updates",
                                     "Latest Update",
                                     "Remove Backup (uno.old)",
@@ -518,6 +719,159 @@ def main():
                                     text(""),
                                     "< Back",
                                 ], color="yellow", sidebars=build_update_sidebars) as update_menu:
+
+                                    if update_menu.is_selected("Create a new backup"):
+                                        bk_title, bk_notes = backup_editor(pair=5)
+                                        if bk_title is not None:
+                                            slot      = update._backup_current(bk_title.strip() or None, source="manual")
+                                            slot_name = os.path.basename(slot)
+                                            if bk_notes and bk_notes.strip():
+                                                update.write_backup_notes(slot_name, bk_notes)
+
+                                    if update_menu.is_selected("Manage backups"):
+                                        while True:
+                                            backups = update.list_backups()
+                                            if not backups:
+                                                with menu("Manage Backups", [
+                                                    text("No backups found."),
+                                                    text("Use 'Create a new backup' to make one."),
+                                                    text(""),
+                                                    "< Back",
+                                                ], color="yellow") as empty_menu:
+                                                    break
+                                            else:
+                                                def build_backup_list_sidebars():
+                                                    sb = {}
+                                                    for b in update.list_backups():
+                                                        props   = update.read_backup_properties(b)
+                                                        source  = props.get("source", "unknown")
+                                                        fv      = props.get("from_version", "?")
+                                                        tv      = props.get("to_version", "")
+                                                        uid     = props.get("update_id", "")
+                                                        created = props.get("created_at", "")
+                                                        modified = props.get("last_modified", "")
+                                                        bk_notes = props.get("notes", "").strip()
+                                                        ver     = f"v{fv} → v{tv}" if tv else f"v{fv}"
+                                                        tag     = "Update" if source == "update" else "Manual"
+                                                        sections = [
+                                                            {"heading": "Source",  "body": tag},
+                                                            {"heading": "Version", "body": ver},
+                                                            {"heading": "Created", "body": created},
+                                                        ]
+                                                        if modified and modified != created:
+                                                            sections.append({"heading": "Modified", "body": modified})
+                                                        if uid:
+                                                            sections.append({"heading": "Update ID", "body": uid})
+                                                        if bk_notes:
+                                                            sections.append({"heading": "Notes", "body": bk_notes.split("\n")[0][:80]})
+                                                        sb[b] = {"title": b, "colour": "yellow", "sections": sections}
+                                                    return sb
+
+                                                backup_items = list(backups) + [text(""), "< Back"]
+                                                with menu("Manage Backups", backup_items,
+                                                          color="yellow", sidebars=build_backup_list_sidebars) as bk_list:
+
+                                                    if bk_list.is_selected("< Back"):
+                                                        break
+
+                                                    selected_backup = next((b for b in backups if bk_list.is_selected(b)), None)
+
+                                                    if selected_backup:
+                                                        props   = update.read_backup_properties(selected_backup)
+                                                        source  = props.get("source", "manual")
+                                                        fv      = props.get("from_version", "?")
+                                                        tv      = props.get("to_version", "")
+                                                        ver     = f"v{fv} → v{tv}" if tv else f"v{fv}"
+                                                        created = props.get("created_at", "")
+                                                        bk_notes = props.get("notes", "").strip()
+
+                                                        while True:
+                                                            def build_action_sidebars():
+                                                                props_fresh = update.read_backup_properties(selected_backup)
+                                                                modified    = props_fresh.get("last_modified", "")
+                                                                info_sections = [
+                                                                    {"heading": "Source",   "body": "Update" if source == "update" else "Manual"},
+                                                                    {"heading": "Version",  "body": ver},
+                                                                    {"heading": "Created",  "body": created},
+                                                                ]
+                                                                if modified and modified != created:
+                                                                    info_sections.append({"heading": "Modified", "body": modified})
+                                                                info_sections.append(
+                                                                    {"heading": "Notes", "body": bk_notes.split("\n")[0][:80] if bk_notes else "No notes"}
+                                                                )
+                                                                return {
+                                                                    "Restore": {"title": selected_backup, "colour": "yellow", "sections": info_sections},
+                                                                    "Edit":    {"title": selected_backup, "colour": "yellow", "sections": info_sections},
+                                                                    "View notes": {"title": "Notes", "colour": "yellow", "sections": [{"heading": "", "body": bk_notes or "No notes."}]},
+                                                                    "Delete":  {"title": selected_backup, "colour": "red",    "sections": [{"heading": "{red}Warning{/}", "body": "Permanently deletes this backup. Cannot be undone."}]},
+                                                                    "< Back":  {"title": selected_backup, "colour": "yellow", "sections": info_sections},
+                                                                }
+
+                                                            action_items = [
+                                                                text(f"-- {selected_backup} --"),
+                                                                text(""),
+                                                                "Restore",
+                                                                "Edit",
+                                                            ]
+                                                            if source == "update":
+                                                                action_items.append("View notes")
+                                                            action_items += [text(""), "Delete", text(""), "< Back"]
+
+                                                            with menu(selected_backup, action_items,
+                                                                      color="yellow", sidebars=build_action_sidebars) as action_menu:
+
+                                                                if action_menu.is_selected("Restore"):
+                                                                    ok, msg = update.restore_backup(selected_backup)
+                                                                    if ok:
+                                                                        curses_control("end")
+                                                                        print(f"\n{msg}")
+                                                                        input("Press Enter — game will restart...")
+                                                                        update.restart_game()
+                                                                    else:
+                                                                        curses_control("end")
+                                                                        print(f"\n{msg}")
+                                                                        input("Press Enter to return...")
+                                                                        curses_control("start")
+
+                                                                if action_menu.is_selected("Edit"):
+                                                                    new_title, new_notes = backup_editor(
+                                                                        pair=5,
+                                                                        initial_title=selected_backup,
+                                                                        initial_notes=bk_notes,
+                                                                    )
+                                                                    if new_title is not None:
+                                                                        # Rename if title changed
+                                                                        if new_title.strip() and new_title.strip() != selected_backup:
+                                                                            ok, msg = update.rename_backup(selected_backup, new_title.strip())
+                                                                            if ok:
+                                                                                selected_backup = new_title.strip()
+                                                                        # Save notes if changed
+                                                                        if new_notes != bk_notes:
+                                                                            update.write_backup_notes(selected_backup, new_notes)
+                                                                            bk_notes = new_notes.strip()
+
+                                                                if action_menu.is_selected("View notes") and source == "update":
+                                                                    multiline_input(
+                                                                        f"Notes — {selected_backup}  (Esc to close)",
+                                                                        bk_notes or "No notes.", pair=5, readonly=True
+                                                                    )
+
+                                                                if action_menu.is_selected("Delete"):
+                                                                    curses_control("end")
+                                                                    confirm = input(f"Delete '{selected_backup}'? Cannot be undone. (y/N)\n> ").strip().lower()
+                                                                    if confirm == "y":
+                                                                        ok, msg = update.delete_backup(selected_backup)
+                                                                        print(f"\n{msg}")
+                                                                        input("Press Enter to return...")
+                                                                        curses_control("start")
+                                                                        break
+                                                                    else:
+                                                                        print("\nCancelled.")
+                                                                        input("Press Enter to return...")
+                                                                        curses_control("start")
+
+                                                                if action_menu.is_selected("< Back"):
+                                                                    break
 
                                     if update_menu.is_selected("Check for updates"):
                                         global latest_version
@@ -557,7 +911,7 @@ def main():
                                             old_ver = get_old_version() if old_ex else "Not found"
 
                                             latest_sidebars = {
-                                                "View Changelog": {
+                                                "View full changelog": {
                                                     "title": "Changelog",
                                                     "sections": [
                                                         {"heading": "Full changelog", "body": "Scroll through all version history"},
@@ -571,19 +925,46 @@ def main():
                                                         {"heading": "",               "body": "Restoring will replace the current install with the backup version." if old_ex else "No backup available to restore."},
                                                     ]
                                                 },
+                                                "Enable Developer Tools": {
+                                                    "title": "Developer Tools",
+                                                    "sections": [
+                                                        {"heading": "Developer mode", "body": "Enabled" if DEV_MODE else "Disabled"},
+                                                        {"heading": "",               "body": "Enabling developer mode allows access to experimental features and tools intended for development and debugging."},
+                                                    ]
+                                                },
                                             }
 
                                             with menu("Latest Update", [
+                                                
                                                 text(f"-- Version {CURRENT_VERSION} --"),
                                                 text(""),
-                                                "View Changelog",
+                                                "View "+CURRENT_VERSION+" Changelog",
+                                                "View full changelog",
                                                 "Uninstall Update",
+                                                "Enable Developer Tools",
                                                 text(""),
                                                 "< Back",
                                             ], color="yellow", sidebars=latest_sidebars) as latest_menu:
-
-                                                if latest_menu.is_selected("View Changelog"):
-                                                    show_changelog(get_stdscr())
+                                                if latest_menu.is_selected("View "+CURRENT_VERSION+" Changelog"):
+                                                    changelog_notes = update._extract_changelog_for_version(CURRENT_VERSION)
+                                                    curses_control("start")
+                                                    multiline_input(
+                                                        f"Changelog — v{CURRENT_VERSION}  (Esc to close)",
+                                                        changelog_notes or "No changelog entry found for this version.",
+                                                        pair=5, readonly=True
+                                                    )
+                                                    curses_control("end")
+                                                    curses_control("start")
+                                                if latest_menu.is_selected("View full changelog"):
+                                                        full = "\n".join(get_changelog())
+                                                        curses_control("start")
+                                                        multiline_input(
+                                                            "Full Changelog  (Esc to close)",
+                                                            full,
+                                                            pair=5, readonly=True
+                                                        )
+                                                        curses_control("end")
+                                                        curses_control("start")
 
                                                 if latest_menu.is_selected("Uninstall Update"):
                                                     if not get_old_exists():
@@ -592,17 +973,37 @@ def main():
                                                         input("Press Enter to return...")
                                                         curses_control("start")
                                                     else:
-                                                        confirmed = confirm_screen(
-                                                            get_stdscr(),
-                                                            f"Restore backup version {get_old_version()}? This will replace your current install.",
-                                                            warning="This cannot be undone."
-                                                        )
+                                                        if get_terminal_mode():
+                                                            confirmed = terminal_confirm(
+                                                                f"Restore backup version {get_old_version()}? This will replace your current install.",
+                                                                warning="This cannot be undone."
+                                                            )
+                                                        else:
+                                                            confirmed = confirm_screen(
+                                                                get_stdscr(),
+                                                                f"Restore backup version {get_old_version()}? This will replace your current install.",
+                                                                warning="This cannot be undone."
+                                                            )
                                                         if confirmed:
                                                             curses_control("end")
                                                             success, msg = restore_old_version()
                                                             print(f"\n{msg}")
                                                             input("Press Enter to return...")
                                                             curses_control("start")
+                                                if latest_menu.is_selected("Enable Developer Tools"):
+                                                    curses_control("end")
+                                                    print("\nEnabling developer tools...")
+                                                    print("")
+                                                    print("Developer mode allows access to experimental features and tools intended for development and debugging.")
+                                                    print("Developer mode has been enabled")
+                                                    input("Press Enter to continue...")
+                                                    curses_control("start")
+                                                    if not config.has_section("dev_mode"):
+                                                        config.add_section("dev_mode")
+                                                    config["dev_mode"]["developer_mode"] = "True"
+                                                    with open(CONFIG_PATH, "w") as f:
+                                                        config.write(f)
+                                                        DEV_MODE = True
 
                                                 if latest_menu.is_selected("< Back"):
                                                     break
@@ -614,11 +1015,17 @@ def main():
                                             input("Press Enter to return...")
                                             curses_control("start")
                                         else:
-                                            confirmed = confirm_screen(
-                                                get_stdscr(),
-                                                "Permanently delete uno.old? This removes your ability to roll back.",
-                                                warning="This CANNOT be undone."
-                                            )
+                                            if get_terminal_mode():
+                                                confirmed = terminal_confirm(
+                                                    "Permanently delete uno.old? This removes your ability to roll back.",
+                                                    warning="This CANNOT be undone."
+                                                )
+                                            else:
+                                                confirmed = confirm_screen(
+                                                    get_stdscr(),
+                                                    "Permanently delete uno.old? This removes your ability to roll back.",
+                                                    warning="This CANNOT be undone."
+                                                )
                                             if confirmed:
                                                 success, msg = delete_old()
                                                 curses_control("end")
