@@ -103,8 +103,17 @@ def auto_update():
     return load_config().getboolean("update", "auto_update", fallback=False)
 
 
+GITHUB_HEADERS = {
+    "User-Agent": "UnoTerminalEdition-Updater/1.0",
+    "Accept":     "application/json",
+}
+
+
 def fetch_manifest():
-    response = requests.get(manifest_url, timeout=10)
+    response = requests.get(manifest_url, timeout=10, headers=GITHUB_HEADERS)
+    if response.status_code == 429:
+        retry = response.headers.get("Retry-After", "a few minutes")
+        raise Exception(f"GitHub rate limit hit. Try again in {retry}.")
     response.raise_for_status()
     return response.json()
 
@@ -377,7 +386,10 @@ def delete_backup(name):
 
 def _download_file(url, dest_path):
     try:
-        response = requests.get(url, timeout=15)
+        response = requests.get(url, timeout=15, headers=GITHUB_HEADERS)
+        if response.status_code == 429:
+            retry = response.headers.get("Retry-After", "a few minutes")
+            return False, f"GitHub rate limit hit. Try again in {retry}."
         response.raise_for_status()
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         with open(dest_path, "w", encoding="utf-8") as f:
@@ -433,7 +445,7 @@ def check_for_updates():
 
     print(f"Update available: {CURRENT_VERSION} → {latest}")
     to_update = input("Do you want to update now? (y/n): ").strip().lower()
-    if to_update != "y":
+    if to_update == "y":
         print("Creating backup...")
         _backup_current(
             backup_name=f"update_{latest.replace('.', '_')}",
@@ -453,7 +465,6 @@ def check_for_updates():
             print("Update failed — backup preserved in uno.old")
             return {"status": "failed", "version": latest, "errors": errors, "notes": notes}
     else:
-        print("Update cancelled by user.")
         return {"status": "cancelled", "version": latest, "errors": [], "notes": notes}
 
 def _merge_system_properties(new_version, new_manifest_url=None, update_id=None):

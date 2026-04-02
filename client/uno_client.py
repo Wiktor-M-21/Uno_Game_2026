@@ -904,6 +904,10 @@ def main():
                                             print("\nCould not reach update server.")
                                             input("\nPress Enter to return to menu...")
                                             curses_control("start")
+                                        elif result["status"] == "cancelled":
+                                            print("\nUpdate cancelled.")
+                                            input("\nPress Enter to return to menu...")
+                                            curses_control("start")
 
                                     if update_menu.is_selected("Latest Update"):
                                         while True:
